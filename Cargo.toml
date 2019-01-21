@@ -1,0 +1,9 @@
+[package]
+name = "parapet"
+version = "0.1.0"
+authors = ["Spencer Powell <krornus@gmail.com>"]
+edition = "2018"
+
+[dependencies]
+xcb = "0.8"
+image = "0.21"
