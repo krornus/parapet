@@ -5,5 +5,9 @@ authors = ["Spencer Powell <krornus@gmail.com>"]
 edition = "2018"
 
 [dependencies]
-xcb = "0.8"
 image = "0.21"
+xcb = { version = "0.8", features = ["randr"] }
+xcb-util = { version = "0.2", features = ["image", "shm"] }
+
+[dev-dependencies]
+memmap = "0.7.0"
