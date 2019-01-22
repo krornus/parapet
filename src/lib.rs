@@ -1,4 +1,3 @@
-
 pub extern crate image;
 
 use image::{Pixel, DynamicImage, GenericImageView};
@@ -9,9 +8,16 @@ use xcb::randr as xrandr;
 
 use xcb_util::image as xcb_image;
 
+use time::PreciseTime;
+
+use rayon::iter;
+use rayon::prelude::*;
+
 mod error;
+mod pixels;
 
 use crate::error::Error;
+use crate::pixels::SplitPixels;
 
 trait AsU32 {
     fn as_u32(&self) -> u32;
@@ -66,8 +72,6 @@ impl<'a> Display<'a> {
     pub fn set(&self, buf: &DynamicImage, mode: ImageMode) -> Result<(), Error> {
 
         /* FIXME: cant overwrite pixmap for display which is above this one */
-
-
         let root = self.inner.root();
         let depth = self.inner.root_depth();
 
@@ -76,14 +80,31 @@ impl<'a> Display<'a> {
 
         let buf = mode.apply(buf, width.into(), height.into());
 
+        let start = PreciseTime::now();
         let mut image = xcb_util::image::shm::create(self.connection, depth, width, height)
             .map_err(|_| crate::error::Error::ImageCreate)?;
+        let end = PreciseTime::now();
+        dbg!(start.to(end));
 
-        println!("{},{} - {},{}", base_x, base_y, width, height);
+        // let start = PreciseTime::now();
 
+        // iter::split(buf.split_pixels(), |x| x.split())
+        //     .for_each(|pixels| {
+        //         pixels.for_each(|(x,y,pixel)| {
+        //             image.put(x, y, pixel.as_u32())
+        //         });
+        //     }
+        // );
+
+        // let end = PreciseTime::now();
+        // dbg!(start.to(end));
+
+        let start = PreciseTime::now();
         for (x,y,pixel) in buf.pixels() {
             image.put(x, y, pixel.as_u32())
         }
+        let end = PreciseTime::now();
+        dbg!(start.to(end));
 
         let drawable = self.drawable()?;
 
@@ -97,10 +118,15 @@ impl<'a> Display<'a> {
                 (xcb::CW_BACK_PIXMAP, drawable)
             ]).request_check()?;
 
-        self.set_pixmap_property("_XROOTPMAP_ID", drawable)?;
-        self.set_pixmap_property("ESETROOT_PMAP_ID", drawable)?;
+        self.set_pixmap("_XROOTPMAP_ID", drawable)?;
+        self.set_pixmap("ESETROOT_PMAP_ID", drawable)?;
 
-        xcb::clear_area_checked(self.connection, true, root, base_x, base_y, width, height).request_check()?;
+        if !self.connection.flush() {
+            return Err(Error::Flush);
+        }
+
+        xcb::clear_area_checked(self.connection, true, root,
+            0, 0, self.inner.width_in_pixels(), self.inner.height_in_pixels()).request_check()?;
 
         if !self.connection.flush() {
             Err(Error::Flush)
@@ -113,8 +139,7 @@ impl<'a> Display<'a> {
 
         let root = self.inner.root();
         let depth = self.inner.root_depth();
-        let width = self.inner.width_in_pixels();
-        let height = self.inner.height_in_pixels();
+        let (width, height) = self.size();
         let drawable = self.connection.generate_id();
 
         xcb::create_pixmap_checked(self.connection, depth, drawable, root, width, height)
@@ -123,7 +148,25 @@ impl<'a> Display<'a> {
         Ok(drawable)
     }
 
-    fn set_pixmap_property(&self, prop: &str, drawable: u32) -> Result<(), Error> {
+    fn get_pixmap(&self, prop: &str) -> Result<xcb::Pixmap, Error> {
+
+        let atom = xcb::intern_atom(self.connection, false, prop).get_reply()?.atom();
+
+        let reply = xcb::get_property(
+            self.connection, false, self.inner.root(),
+            atom, xcb::ATOM_PIXMAP, 0, 1).get_reply();
+
+        match reply {
+            Ok(x) => if x.type_() != xcb::ATOM_PIXMAP {
+                Err(Error::InvalidType(format!("Pixmap {} is not of type pixmap", prop)))
+            } else {
+                Ok(x.value()[0])
+            }
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    fn set_pixmap(&self, prop: &str, drawable: u32) -> Result<(), Error> {
 
         let atom = xcb::intern_atom(self.connection, false, prop).get_reply()?.atom();
 

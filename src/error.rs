@@ -10,6 +10,7 @@ pub enum Error {
     ImageFormat(String),
     ImageCreate,
     ImagePut,
+    InvalidType(String),
     Flush,
     XcbError(XcbError<XcbGenericError>),
 }
@@ -31,6 +32,7 @@ impl fmt::Display for Error {
         match self {
             Error::ImageFormat(e) => write!(f, "Image format error: unsupported format: {}", e),
             Error::Connection(e) => write!(f, "X11 connection error: {}", e),
+            Error::InvalidType(s) => write!(f, "Type error: {}", s),
             Error::XcbError(XcbError{ ptr: e }) => write!(f, "XCB error: {:?}", e),
             Error::ImageCreate => write!(f, "X11 failed to create image"),
             Error::ImagePut => write!(f, "XCB failed to put image"),
