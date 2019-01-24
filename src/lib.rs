@@ -1,57 +1,17 @@
 pub extern crate image;
 
-use image::{Pixel, DynamicImage, GenericImageView};
+use image::{DynamicImage};
 
 use xcb::Connection;
 use xcb::xproto;
 use xcb::randr as xrandr;
 
-use xcb_util::image as xcb_image;
-
-use time::PreciseTime;
-
-use rayon::iter;
-use rayon::prelude::*;
-
 mod error;
-mod pixels;
+mod ximage;
+mod rect;
 
 use crate::error::Error;
-use crate::pixels::SplitPixels;
-
-trait AsU32 {
-    fn as_u32(&self) -> u32;
-}
-
-impl<T: Pixel<Subpixel=u8>> AsU32 for T {
-    fn as_u32(&self) -> u32 {
-
-        let rgb = self.to_rgb();
-        let c = rgb.channels();
-
-        ((c[0] as u32) << 16) |
-        ((c[1] as u32) <<  8) |
-        ((c[2] as u32) <<  0)
-    }
-}
-
-pub enum ImageMode {
-    Fill,
-    Max,
-}
-
-impl ImageMode {
-    fn apply(&self, image: &image::DynamicImage, width: u32, height: u32) -> image::DynamicImage {
-        match self {
-            ImageMode::Fill => {
-                image.resize(width, height, image::FilterType::Lanczos3)
-            }
-            ImageMode::Max => {
-                image.resize_to_fill(width, height, image::FilterType::Lanczos3)
-            }
-        }
-    }
-}
+pub use crate::ximage::ImageMode;
 
 
 pub struct Display<'a> {
@@ -71,48 +31,18 @@ impl<'a> Display<'a> {
 
     pub fn set(&self, buf: &DynamicImage, mode: ImageMode) -> Result<(), Error> {
 
-        /* FIXME: cant overwrite pixmap for display which is above this one */
         let root = self.inner.root();
-        let depth = self.inner.root_depth();
 
         let (width, height) = self.size();
         let (base_x, base_y) = self.origin();
 
-        let buf = mode.apply(buf, width.into(), height.into());
-
-        let start = PreciseTime::now();
-        let mut image = xcb_util::image::shm::create(self.connection, depth, width, height)
-            .map_err(|_| crate::error::Error::ImageCreate)?;
-        let end = PreciseTime::now();
-        dbg!(start.to(end));
-
-        // let start = PreciseTime::now();
-
-        // iter::split(buf.split_pixels(), |x| x.split())
-        //     .for_each(|pixels| {
-        //         pixels.for_each(|(x,y,pixel)| {
-        //             image.put(x, y, pixel.as_u32())
-        //         });
-        //     }
-        // );
-
-        // let end = PreciseTime::now();
-        // dbg!(start.to(end));
-
-        let start = PreciseTime::now();
-        for (x,y,pixel) in buf.pixels() {
-            image.put(x, y, pixel.as_u32())
-        }
-        let end = PreciseTime::now();
-        dbg!(start.to(end));
-
-        let drawable = self.drawable()?;
+        let image = mode.apply(buf, width.into(), height.into());
+        let drawable = self.drawable(width, height)?;
 
         let gc = self.connection.generate_id();
         xcb::create_gc_checked(self.connection, gc, root, &[]).request_check()?;
 
-        xcb_image::shm::put(self.connection, drawable, gc, &image, 0, 0, base_x, base_y, width, height, false)
-            .map_err(|_| crate::error::Error::ImagePut)?;
+        image.put_checked(self.connection, drawable, gc, base_x, base_y).request_check()?;
 
         xcb::change_window_attributes_checked(self.connection, root, &[
                 (xcb::CW_BACK_PIXMAP, drawable)
@@ -122,24 +52,20 @@ impl<'a> Display<'a> {
         self.set_pixmap("ESETROOT_PMAP_ID", drawable)?;
 
         if !self.connection.flush() {
-            return Err(Error::Flush);
-        }
-
-        xcb::clear_area_checked(self.connection, true, root,
-            0, 0, self.inner.width_in_pixels(), self.inner.height_in_pixels()).request_check()?;
-
-        if !self.connection.flush() {
             Err(Error::Flush)
         } else {
+
+            xcb::clear_area_checked(self.connection, true, root,
+                0, 0, self.inner.width_in_pixels(), self.inner.height_in_pixels()).request_check()?;
+
             Ok(())
         }
     }
 
-    fn drawable(&self) -> Result<u32, Error> {
+    fn drawable(&self, width: u16, height: u16) -> Result<u32, Error> {
 
         let root = self.inner.root();
         let depth = self.inner.root_depth();
-        let (width, height) = self.size();
         let drawable = self.connection.generate_id();
 
         xcb::create_pixmap_checked(self.connection, depth, drawable, root, width, height)
@@ -218,9 +144,11 @@ impl Manager {
         let timestamp = self.resources.timestamp();
 
         Ok(self.resources.crtcs().iter()
-            .filter_map(move |crtc| {
+            .map(move |crtc| {
                 xrandr::get_crtc_info(&self.connection, *crtc, timestamp)
-                    .get_reply().ok()
+            })
+            .filter_map(|x| {
+                x.get_reply().ok()
             })
             .map(move |info| {
                 let screen = self.connection.get_setup().roots().nth(self.screen).unwrap();
