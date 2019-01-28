@@ -10,7 +10,7 @@ mod error;
 mod ximage;
 mod rect;
 
-use crate::error::Error;
+pub use crate::error::Error;
 pub use crate::ximage::ImageMode;
 
 
