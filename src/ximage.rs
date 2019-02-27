@@ -44,6 +44,7 @@ fn to_bgra(image: DynamicImage) -> BgraImage {
     }
 }
 
+#[derive(Debug, Clone)]
 pub enum ImageMode {
     Max,
     Fill,
